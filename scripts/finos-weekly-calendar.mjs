@@ -35,10 +35,21 @@ function mondayMidnightSameIsoWeek(dtNyc) {
 }
 
 function signupUrl(ext) {
-  if (ext?.share_url) return ext.share_url;
+  if (ext?.share_url) return withInviteParam(ext.share_url);
   const id = ext?.meeting_id;
-  if (id) return `https://zoom-lfx.platform.linuxfoundation.org/meeting/${id}`;
-  return "https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month";
+  if (id) return withInviteParam(`https://zoom-lfx.platform.linuxfoundation.org/meeting/${id}`);
+  return withInviteParam("https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month");
+}
+
+function withInviteParam(url) {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set("invite", "true");
+    return parsed.toString();
+  } catch {
+    const joiner = url.includes("?") ? "&" : "?";
+    return `${url}${joiner}invite=true`;
+  }
 }
 
 function formatLineMarkdown(title, isoStart, extProps) {
@@ -53,7 +64,7 @@ function formatLinePlain(title, isoStart, extProps) {
   const nycT = t.setZone(NYC).toFormat("hh:mm a");
   const ukT = t.setZone(UK).toFormat("hh:mm a");
   const url = signupUrl(extProps);
-  return `${nycT} NYC / ${ukT} UK - ${title} - Sign Up (${url})`;
+  return `${nycT} NYC / ${ukT} UK - ${title} - [Sign Up](${url})`;
 }
 
 async function fetchMeetings(projectSlug, signal) {
