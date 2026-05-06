@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { exit } from "node:process";
 import { DateTime } from "luxon";
@@ -205,6 +205,76 @@ async function fetchMeetings(projectSlug) {
   throw lastErr;
 }
 
+async function fetchPastMeetingsForRange(projectSlug, startDateNyc, endDateNyc) {
+  const base =
+    process.env.PUBLIC_MEETINGS_API ??
+    DEFAULT_API;
+  const apiRoot = base.replace(/\/$/, "").replace(/\/public\/meetings$/, "");
+  const pastUrl =
+    `${apiRoot}/public/meetings/${encodeURIComponent(projectSlug)}` +
+    `/past?start_date=${encodeURIComponent(startDateNyc)}&end_date=${encodeURIComponent(endDateNyc)}`;
+
+  // Reuse the same resilience knobs as primary meetings fetch.
+  const timeoutMs =
+    Number.parseInt(process.env.FETCH_TIMEOUT_MS ?? "", 10) || 120000;
+  const maxAttempts =
+    Number.parseInt(process.env.FETCH_MAX_ATTEMPTS ?? "", 10) || 5;
+
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(pastUrl, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      clearTimeout(timer);
+      if (!res.ok)
+        throw new Error(`Past meetings HTTP ${res.status}: ${await res.text()}`);
+      const payload = await res.json();
+      if (Array.isArray(payload?.meetings)) return payload.meetings;
+      if (Array.isArray(payload)) return payload;
+      return [];
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      const retry = isRetryableFetchError(err) && attempt < maxAttempts;
+      if (!retry) throw err;
+      const backoff = Math.min(45000, 4000 * 2 ** (attempt - 1));
+      console.error(
+        `Past meetings attempt ${attempt}/${maxAttempts} failed (${err?.cause?.code ?? err?.message ?? err}), waiting ${backoff}ms…`
+      );
+      await sleepMs(backoff);
+    }
+  }
+  throw lastErr;
+}
+
+async function loadWeekCache(cachePath) {
+  if (!cachePath) return [];
+  try {
+    const raw = await readFile(resolve(cachePath), "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.meetings) ? parsed.meetings : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveWeekCache(cachePath, meetings, weekStartIso, weekEndIso) {
+  if (!cachePath) return;
+  const abs = resolve(cachePath);
+  await mkdir(dirname(abs), { recursive: true });
+  const payload = {
+    weekStart: weekStartIso,
+    weekEnd: weekEndIso,
+    updatedAt: DateTime.now().toISO(),
+    meetings,
+  };
+  await writeFile(abs, JSON.stringify(payload, null, 2), "utf8");
+}
+
 function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
   const fmtLine = markdown ? formatLineMarkdown : formatLinePlain;
   const weeks = new Map();
@@ -266,6 +336,7 @@ async function main() {
   const slug = process.env.PROJECT_SLUG ?? "finos";
   const outPath = process.env.OUTPUT ?? "";
   const outHtmlPath = process.env.OUTPUT_HTML ?? "";
+  const weekCachePath = process.env.WEEK_CACHE_PATH ?? "";
   const markdown = process.env.FORMAT !== "plain";
 
   const { start: monthStartNyc, end: monthEndNyc } = monthBoundsNyc(monthStr);
@@ -275,6 +346,74 @@ async function main() {
 
   const data = await fetchMeetings(slug);
   const meetings = Array.isArray(data?.meetings) ? data.meetings : [];
+
+  // LFX public feed can hide completed meetings. For the current month, merge
+  // current NYC week past meetings so this week's earlier days stay visible.
+  const nowNyc = DateTime.now().setZone(NYC);
+  if (monthStartNyc.hasSame(nowNyc, "month")) {
+    const weekStart = mondayMidnightSameIsoWeek(nowNyc);
+    const weekEnd = weekStart.plus({ days: 6 }).endOf("day");
+    const weekStartNyc = weekStart.toISODate();
+    const weekEndNyc = nowNyc.toISODate();
+    const weekEndFullIso = weekEnd.toISODate();
+    try {
+      const pastMeetings = await fetchPastMeetingsForRange(
+        slug,
+        weekStartNyc,
+        weekEndNyc
+      );
+      const seen = new Set(meetings.map((m) => `${m?.id ?? ""}|${m?.start ?? ""}`));
+      for (const pm of pastMeetings) {
+        const k = `${pm?.id ?? ""}|${pm?.start ?? ""}`;
+        if (!seen.has(k)) {
+          meetings.push(pm);
+          seen.add(k);
+        }
+      }
+      if (pastMeetings.length > 0) {
+        console.error(
+          `Merged ${pastMeetings.length} past meetings from ${weekStartNyc}..${weekEndNyc} (${NYC}).`
+        );
+      }
+    } catch (err) {
+      // Non-fatal: keep normal output even if past endpoint is unavailable.
+      console.error(`Past meetings fetch skipped: ${err?.message ?? err}`);
+    }
+
+    // Merge persistent cache as a fallback when upstream removes prior week days.
+    const cachedMeetings = await loadWeekCache(weekCachePath);
+    if (cachedMeetings.length > 0) {
+      const seen = new Set(meetings.map((m) => `${m?.id ?? ""}|${m?.start ?? ""}`));
+      let mergedCount = 0;
+      for (const cm of cachedMeetings) {
+        if (!cm?.start) continue;
+        const t = DateTime.fromISO(cm.start).setZone(NYC);
+        if (t < weekStart || t > weekEnd) continue;
+        const k = `${cm?.id ?? ""}|${cm?.start ?? ""}`;
+        if (!seen.has(k)) {
+          meetings.push(cm);
+          seen.add(k);
+          mergedCount += 1;
+        }
+      }
+      if (mergedCount > 0) {
+        console.error(`Merged ${mergedCount} meetings from persistent current-week cache.`);
+      }
+    }
+
+    // Refresh cache for the current NYC week only.
+    const cacheWeekMeetings = meetings.filter((m) => {
+      if (!m?.start) return false;
+      const t = DateTime.fromISO(m.start).setZone(NYC);
+      return t >= weekStart && t <= weekEnd;
+    });
+    await saveWeekCache(weekCachePath, cacheWeekMeetings, weekStartNyc, weekEndFullIso);
+    if (weekCachePath) {
+      console.error(
+        `Saved current-week cache (${cacheWeekMeetings.length} meetings) to ${resolve(weekCachePath)}.`
+      );
+    }
+  }
 
   let digest = buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown);
   if (!digest)

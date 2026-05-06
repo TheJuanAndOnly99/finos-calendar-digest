@@ -28,6 +28,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore current-week cache
+        id: restore-week-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/current-week-meetings.json
+          key: finos-current-week-cache-${{ github.run_id }}
+          restore-keys: |
+            finos-current-week-cache-
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -43,6 +52,7 @@ jobs:
         env:
           OUTPUT: ${{ github.workspace }}/output/finos-this-month.md
           OUTPUT_HTML: ${{ github.workspace }}/output/finos-this-month.html
+          WEEK_CACHE_PATH: ${{ github.workspace }}/.cache/current-week-meetings.json
           DISPATCH_MONTH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.month || '' }}
           DISPATCH_FORMAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.format || 'markdown' }}
         run: |
@@ -57,6 +67,12 @@ jobs:
           fi
           mkdir -p output
           node scripts/finos-weekly-calendar.mjs
+
+      - name: Save current-week cache
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/current-week-meetings.json
+          key: finos-current-week-cache-${{ github.run_id }}
 
       - name: Prepare GitHub Pages file
         shell: bash
