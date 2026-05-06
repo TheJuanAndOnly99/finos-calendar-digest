@@ -1,0 +1,8 @@
+{
+  "name": "finos-calendar-scrape",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "luxon": "^3.5.0"
+  }
+}

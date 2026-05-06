@@ -1,0 +1,66 @@
+name: FINOS This Week At (monthly digest)
+
+on:
+  workflow_dispatch:
+    inputs:
+      month:
+        description: Calendar month to render (YYYY-MM). Defaults to current month in America/New_York.
+        required: false
+        type: string
+      format:
+        description: Markdown (default, with links) or plain text
+        required: false
+        default: markdown
+        type: choice
+        options:
+          - markdown
+          - plain
+  schedule:
+    - cron: "0 12 1 * *"
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Generate digest
+        shell: bash
+        env:
+          OUTPUT: ${{ github.workspace }}/output/finos-this-month.md
+          DISPATCH_MONTH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.month || '' }}
+          DISPATCH_FORMAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.format || 'markdown' }}
+        run: |
+          set -e
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -n "${DISPATCH_MONTH}" ]; then
+              export MONTH="${DISPATCH_MONTH}"
+            fi
+            if [ "${DISPATCH_FORMAT}" = "plain" ]; then
+              export FORMAT=plain
+            fi
+          fi
+          mkdir -p output
+          node scripts/finos-weekly-calendar.mjs
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: finos-this-month
+          path: output/finos-this-month.md
+          if-no-files-found: error
+          retention-days: 90
