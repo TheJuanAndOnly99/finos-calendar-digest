@@ -251,11 +251,22 @@ async function fetchPastMeetingsForRange(projectSlug, startDateNyc, endDateNyc) 
   throw lastErr;
 }
 
-async function loadWeekCache(cachePath) {
+async function loadWeekCache(cachePath, currentWeekStartIso) {
   if (!cachePath) return [];
   try {
     const raw = await readFile(resolve(cachePath), "utf8");
     const parsed = JSON.parse(raw);
+    // Drop last week's cache as soon as NYC Monday rolls forward.
+    if (typeof parsed?.weekStart !== "string") {
+      console.error("Week cache missing weekStart; ignoring (will repopulate).");
+      return [];
+    }
+    if (parsed.weekStart !== currentWeekStartIso) {
+      console.error(
+        `Week cache is for ${parsed.weekStart}, current week starts ${currentWeekStartIso}; ignoring.`
+      );
+      return [];
+    }
     return Array.isArray(parsed?.meetings) ? parsed.meetings : [];
   } catch {
     return [];
@@ -381,7 +392,7 @@ async function main() {
     }
 
     // Merge persistent cache as a fallback when upstream removes prior week days.
-    const cachedMeetings = await loadWeekCache(weekCachePath);
+    const cachedMeetings = await loadWeekCache(weekCachePath, weekStartNyc);
     if (cachedMeetings.length > 0) {
       const seen = new Set(meetings.map((m) => `${m?.id ?? ""}|${m?.start ?? ""}`));
       let mergedCount = 0;
