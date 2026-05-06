@@ -142,12 +142,67 @@ function formatLinePlain(title, isoStart, extProps) {
   return `${nycT} NYC / ${ukT} UK - ${title} - [Sign Up](${url})`;
 }
 
-async function fetchMeetings(projectSlug, signal) {
+function sleepMs(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function isRetryableFetchError(err) {
+  if (!err) return false;
+  const code = err.cause?.code;
+  const name = err.name;
+  if (name === "AbortError") return true;
+  if (
+    code === "UND_ERR_CONNECT_TIMEOUT" ||
+    code === "UND_ERR_HEADERS_TIMEOUT" ||
+    code === "UND_ERR_BODY_TIMEOUT" ||
+    code === "ECONNRESET" ||
+    code === "ECONNREFUSED" ||
+    code === "ETIMEDOUT" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN"
+  ) {
+    return true;
+  }
+  const msg = String(err.message ?? "");
+  if (/fetch failed/i.test(msg)) return true;
+  return false;
+}
+
+async function fetchMeetings(projectSlug) {
   const base = process.env.PUBLIC_MEETINGS_API ?? DEFAULT_API;
   const url = `${base}/${encodeURIComponent(projectSlug)}?view=pcc`;
-  const res = await fetch(url, { signal, headers: { Accept: "application/json" } });
-  if (!res.ok) throw new Error(`Meetings HTTP ${res.status}: ${await res.text()}`);
-  return res.json();
+  const timeoutMs =
+    Number.parseInt(process.env.FETCH_TIMEOUT_MS ?? "", 10) || 120000;
+  const maxAttempts =
+    Number.parseInt(process.env.FETCH_MAX_ATTEMPTS ?? "", 10) || 5;
+
+  let lastErr;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: { Accept: "application/json" },
+      });
+      clearTimeout(timer);
+      if (!res.ok)
+        throw new Error(`Meetings HTTP ${res.status}: ${await res.text()}`);
+      return res.json();
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      const retry =
+        isRetryableFetchError(err) && attempt < maxAttempts;
+      if (!retry) throw err;
+      const backoff = Math.min(45000, 4000 * 2 ** (attempt - 1));
+      console.error(
+        `Meeting API attempt ${attempt}/${maxAttempts} failed (${err?.cause?.code ?? err?.message ?? err}), waiting ${backoff}ms…`
+      );
+      await sleepMs(backoff);
+    }
+  }
+  throw lastErr;
 }
 
 function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
