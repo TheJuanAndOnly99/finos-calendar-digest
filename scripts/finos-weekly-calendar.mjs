@@ -9,6 +9,81 @@ const UK = "Europe/London";
 const DEFAULT_API =
   "https://pcc-bff.platform.linuxfoundation.org/production/api/v2/itx-services/public/meetings";
 
+function markdownToHtml(markdown) {
+  const escaped = markdown
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+
+  const withLinks = escaped.replace(
+    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+  );
+
+  const lines = withLinks.split("\n");
+  const out = [];
+  let inList = false;
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (!line.trim()) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      continue;
+    }
+    if (line.startsWith("## ")) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      out.push(`<h2>${line.slice(3)}</h2>`);
+      continue;
+    }
+    if (line.startsWith("This Week At FINOS")) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      out.push(`<h3>${line}</h3>`);
+      continue;
+    }
+    if (/^[A-Za-z]+, [A-Za-z]+ \d+$/.test(line)) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      out.push(`<h4>${line}</h4>`);
+      continue;
+    }
+    if (!inList) {
+      out.push("<ul>");
+      inList = true;
+    }
+    out.push(`<li>${line}</li>`);
+  }
+  if (inList) out.push("</ul>");
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FINOS Calendar Digest</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; }
+    h2, h3, h4 { margin: 16px 0 8px; }
+    ul { margin-top: 6px; }
+    li { margin: 4px 0; }
+  </style>
+</head>
+<body>
+${out.join("\n")}
+</body>
+</html>
+`;
+}
+
 function parseMonthArg(argv) {
   const i = argv.indexOf("--month");
   if (i !== -1 && argv[i + 1]) return argv[i + 1].trim();
@@ -135,6 +210,7 @@ async function main() {
   const monthStr = parseMonthArg(process.argv);
   const slug = process.env.PROJECT_SLUG ?? "finos";
   const outPath = process.env.OUTPUT ?? "";
+  const outHtmlPath = process.env.OUTPUT_HTML ?? "";
   const markdown = process.env.FORMAT !== "plain";
 
   const { start: monthStartNyc, end: monthEndNyc } = monthBoundsNyc(monthStr);
@@ -165,6 +241,13 @@ async function main() {
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, full, "utf8");
     console.error(`Wrote ${abs}`);
+  }
+
+  if (outHtmlPath) {
+    const absHtml = resolve(outHtmlPath);
+    await mkdir(dirname(absHtml), { recursive: true });
+    await writeFile(absHtml, markdownToHtml(full), "utf8");
+    console.error(`Wrote ${absHtml}`);
   }
 
   const summaryFile = process.env.GITHUB_STEP_SUMMARY;

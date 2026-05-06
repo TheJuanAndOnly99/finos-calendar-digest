@@ -42,6 +42,7 @@ jobs:
         shell: bash
         env:
           OUTPUT: ${{ github.workspace }}/output/finos-this-month.md
+          OUTPUT_HTML: ${{ github.workspace }}/output/finos-this-month.html
           DISPATCH_MONTH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.month || '' }}
           DISPATCH_FORMAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.format || 'markdown' }}
         run: |
@@ -61,6 +62,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: finos-this-month
-          path: output/finos-this-month.md
+          path: |
+            output/finos-this-month.md
+            output/finos-this-month.html
           if-no-files-found: error
           retention-days: 90
