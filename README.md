@@ -2,7 +2,7 @@
 
 Generates a monthly "This Week At FINOS" digest.
 
-Live output: <https://thejuanandonly99.github.io/calendar-scrape/>
+Live output: <https://thejuanandonly99.github.io/finos-calendar-digest/>
 
 The output groups every meeting in a calendar month by ISO week and weekday,
 with start times in both **New York** and **London** time and a one-click
