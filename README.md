@@ -92,8 +92,8 @@ and on manual dispatch, and:
 - Restores / saves the current-week cache via `actions/cache`.
 - Writes `output/finos-this-month.md` and `output/finos-this-month.html`.
 - Uploads them as a build artifact (90-day retention).
-- Publishes the HTML to GitHub Pages (`output/index.html`) at
-  <https://thejuanandonly99.github.io/calendar-scrape/>.
+- Publishes the HTML to GitHub Pages (`output/pages/index.html`) at
+  <https://thejuanandonly99.github.io/finos-calendar-digest/>.
 
 `workflow_dispatch` accepts:
 

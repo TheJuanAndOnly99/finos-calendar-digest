@@ -9,6 +9,32 @@ const UK = "Europe/London";
 const DEFAULT_API =
   "https://pcc-bff.platform.linuxfoundation.org/production/api/v2/itx-services/public/meetings";
 
+function isMeetingLine(line) {
+  return /^\d{1,2}:\d{2} [AP]M NYC /.test(line);
+}
+
+function isDayHeading(line) {
+  return /^[A-Za-z]+, [A-Za-z]+ \d+$/.test(line);
+}
+
+function isWeekHeading(line) {
+  return line.startsWith("### ") || line.startsWith("This Week At FINOS");
+}
+
+function closeList(out, inList) {
+  if (inList.value) {
+    out.push("</ul>");
+    inList.value = false;
+  }
+}
+
+function closeWeek(out, inWeek) {
+  if (inWeek.value) {
+    out.push("</section>");
+    inWeek.value = false;
+  }
+}
+
 function markdownToHtml(markdown) {
   const escaped = markdown
     .replace(/&/g, "&amp;")
@@ -22,55 +48,58 @@ function markdownToHtml(markdown) {
 
   const lines = withLinks.split("\n");
   const out = [];
-  let inList = false;
-  for (const raw of lines) {
-    const line = raw.trimEnd();
+  const inList = { value: false };
+  const inWeek = { value: false };
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i].trimEnd();
     if (!line.trim()) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
+      closeList(out, inList);
       continue;
     }
+
     if (line.startsWith("## ")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
+      closeList(out, inList);
+      closeWeek(out, inWeek);
       out.push(`<h2>${line.slice(3)}</h2>`);
       continue;
     }
-    if (line.startsWith("### ")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      out.push(`<h3>${line.slice(4)}</h3>`);
+
+    if (isWeekHeading(line)) {
+      closeList(out, inList);
+      closeWeek(out, inWeek);
+      out.push('<section class="week">');
+      inWeek.value = true;
+      const title = line.startsWith("### ") ? line.slice(4) : line;
+      out.push(`<h3>${title}</h3>`);
       continue;
     }
-    if (line.startsWith("This Week At FINOS")) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
-      out.push(`<h3>${line}</h3>`);
-      continue;
-    }
-    if (/^[A-Za-z]+, [A-Za-z]+ \d+$/.test(line)) {
-      if (inList) {
-        out.push("</ul>");
-        inList = false;
-      }
+
+    if (isDayHeading(line)) {
+      closeList(out, inList);
       out.push(`<h4>${line}</h4>`);
+      const next = lines.slice(i + 1).find((l) => l.trim());
+      if (!next || !isMeetingLine(next)) {
+        out.push('<p class="empty-day">No meetings scheduled.</p>');
+      }
       continue;
     }
-    if (!inList) {
-      out.push("<ul>");
-      inList = true;
+
+    if (isMeetingLine(line)) {
+      if (!inList.value) {
+        out.push("<ul>");
+        inList.value = true;
+      }
+      out.push(`<li>${line}</li>`);
+      continue;
     }
-    out.push(`<li>${line}</li>`);
+
+    closeList(out, inList);
+    out.push(`<p class="intro">${line}</p>`);
   }
-  if (inList) out.push("</ul>");
+
+  closeList(out, inList);
+  closeWeek(out, inWeek);
 
   return `<!doctype html>
 <html lang="en">
@@ -79,10 +108,17 @@ function markdownToHtml(markdown) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FINOS Calendar Digest</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; }
-    h2, h3, h4 { margin: 16px 0 8px; }
-    ul { margin-top: 6px; }
-    li { margin: 4px 0; }
+    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; color: #1a1a1a; }
+    h2 { margin: 0 0 12px; font-size: 1.75rem; }
+    .intro { margin: 0 0 24px; color: #444; }
+    .week { margin: 32px 0; padding: 20px 0 8px; border-top: 1px solid #ddd; }
+    .week:first-of-type { border-top: none; padding-top: 0; }
+    h3 { margin: 0 0 16px; font-size: 1.25rem; }
+    h4 { margin: 20px 0 8px; font-size: 1rem; color: #333; }
+    ul { margin: 0 0 8px; padding-left: 1.25rem; }
+    li { margin: 6px 0; }
+    .empty-day { margin: 0 0 8px; color: #888; font-size: 0.95rem; font-style: italic; }
+    a { color: #0b5fff; }
   </style>
 </head>
 <body>
