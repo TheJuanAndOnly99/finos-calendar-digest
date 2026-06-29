@@ -1,12 +1,13 @@
 # finos-calendar-digest
 
-Generates a monthly "This Week At FINOS" digest.
+Generates a rolling "This Week At FINOS" digest for GitHub Pages.
 
 Live output: <https://thejuanandonly99.github.io/finos-calendar-digest/>
 
-The output groups every meeting in a calendar month by ISO week and weekday,
-with start times in both **New York** and **London** time and a one-click
-**Sign Up** link to the LFX Zoom registration page.
+By default the output shows the **previous**, **current**, and **next** NYC
+week (Monday–Sunday), with start times in both **New York** and **London**
+time and a one-click **Sign Up** link to the LFX Zoom registration page.
+Pass `--month` / `MONTH` to render a full calendar month instead.
 
 > This project calls the LFX Project Control Center public JSON endpoint
 > (`pcc-bff.platform.linuxfoundation.org/.../public/meetings/<slug>`) — the
@@ -20,14 +21,15 @@ with start times in both **New York** and **London** time and a one-click
 
 1. Fetches the current schedule from the LFX public meetings API:
    `https://pcc-bff.platform.linuxfoundation.org/production/api/v2/itx-services/public/meetings/<slug>?view=pcc`
-2. For the current month it also pulls the `/past` endpoint for the current
-   NYC ISO week, so meetings that already happened earlier this week are not
+2. For the default rolling view it also pulls the `/past` endpoint for the
+   previous and current NYC weeks, so meetings that already happened are not
    silently dropped when LFX hides completed events.
 3. Merges a small persistent cache (`.cache/current-week-meetings.json`) as a
    second-level fallback, then re-saves the cache for the active week.
-4. Buckets meetings into NYC weeks, formats each line as
+4. Buckets meetings into NYC weeks (always Monday–Sunday, including spillover
+   days at month boundaries), formats each line as
    `hh:mm a NYC / hh:mm a UK - <title> - [Sign Up](<url>)`, and emits the
-   month digest as Markdown (default) or plain text.
+   digest as Markdown (default) or plain text.
 5. Optionally writes a styled HTML version (via a small inline Markdown ->
    HTML converter) for publishing.
 
@@ -45,8 +47,8 @@ npm install
 node scripts/finos-weekly-calendar.mjs
 ```
 
-By default it prints the digest for the current month (in `America/New_York`)
-to stdout.
+By default it prints the rolling three-week digest (previous, current, and
+next NYC week) to stdout.
 
 ### Common options
 
@@ -54,7 +56,7 @@ All configuration is done via env vars or the single `--month` flag.
 
 | Variable             | Default                                  | Description |
 | -------------------- | ---------------------------------------- | ----------- |
-| `MONTH` / `--month`  | current NYC month (`YYYY-MM`)            | Month to render. Also accepts `YYYYMM`. |
+| `MONTH` / `--month`  | _(unset — rolling 3-week view)_          | Month to render instead. Also accepts `YYYYMM`. |
 | `PROJECT_SLUG`       | `finos`                                  | LFX project slug to query. |
 | `PUBLIC_MEETINGS_API`| LFX production endpoint                  | Override the base meetings URL. |
 | `FORMAT`             | `markdown`                               | Set to `plain` to disable Markdown link syntax. |
@@ -93,8 +95,14 @@ and on manual dispatch, and:
 - Publishes the HTML to GitHub Pages (`output/index.html`) at
   <https://thejuanandonly99.github.io/calendar-scrape/>.
 
-`workflow_dispatch` accepts an optional `month` (`YYYY-MM`) and a `format`
-(`markdown` | `plain`).
+`workflow_dispatch` accepts:
+
+- `range`: `rolling-weeks` (default, same as the daily schedule) or `custom-month`
+- `month`: required when `range` is `custom-month` (`YYYY-MM`)
+- `format`: `markdown` | `plain`
+
+Weeks always render Monday–Sunday in NYC. Boundary weeks include spillover
+days (and meetings) from the previous or next month.
 
 ## Repository layout
 
@@ -108,14 +116,13 @@ output/                             # generated md / html (gitignored)
 ## Output format
 
 ```
-## FINOS calendar — May 2026
+## FINOS calendar — June 22–July 12, 2026
 
-Source: [FINOS meetings (month)](https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month).
+Rolling view: previous, current, and next NYC week (Monday–Sunday). Source: ...
 
-This Week At FINOS
+### June 22–28, 2026
 
-Monday, May 4
-10:00 AM NYC / 03:00 PM UK - <Meeting title> - [Sign Up](https://zoom-lfx.platform.linuxfoundation.org/meeting/<id>?invite=true)
+Monday, June 22
 ...
 ```
 

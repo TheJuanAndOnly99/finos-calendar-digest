@@ -40,6 +40,14 @@ function markdownToHtml(markdown) {
       out.push(`<h2>${line.slice(3)}</h2>`);
       continue;
     }
+    if (line.startsWith("### ")) {
+      if (inList) {
+        out.push("</ul>");
+        inList = false;
+      }
+      out.push(`<h3>${line.slice(4)}</h3>`);
+      continue;
+    }
     if (line.startsWith("This Week At FINOS")) {
       if (inList) {
         out.push("</ul>");
@@ -84,12 +92,13 @@ ${out.join("\n")}
 `;
 }
 
-function parseMonthArg(argv) {
+/** When unset, the digest uses a rolling NYC Monday–Sunday window (see main). */
+function parseExplicitMonthArg(argv) {
   const i = argv.indexOf("--month");
   if (i !== -1 && argv[i + 1]) return argv[i + 1].trim();
   const env = process.env.MONTH?.trim();
   if (env) return env;
-  return DateTime.now().setZone(NYC).toFormat("yyyy-MM");
+  return null;
 }
 
 function padMonth(s) {
@@ -107,6 +116,20 @@ function monthBoundsNyc(monthStr) {
 function mondayMidnightSameIsoWeek(dtNyc) {
   const wd = dtNyc.weekday;
   return dtNyc.minus({ days: wd - 1 }).startOf("day");
+}
+
+function formatNycDaySpan(startNyc, endNyc) {
+  if (startNyc.year !== endNyc.year) {
+    return `${startNyc.toFormat("MMMM d, yyyy")}–${endNyc.toFormat("MMMM d, yyyy")}`;
+  }
+  if (startNyc.month === endNyc.month) {
+    return `${startNyc.toFormat("MMMM d")}–${endNyc.toFormat("d, yyyy")}`;
+  }
+  return `${startNyc.toFormat("MMMM d")}–${endNyc.toFormat("MMMM d, yyyy")}`;
+}
+
+function formatWeekRangeTitle(mondayNyc) {
+  return formatNycDaySpan(mondayNyc, mondayNyc.plus({ days: 6 }));
 }
 
 function signupUrl(ext) {
@@ -286,22 +309,33 @@ async function saveWeekCache(cachePath, meetings, weekStartIso, weekEndIso) {
   await writeFile(abs, JSON.stringify(payload, null, 2), "utf8");
 }
 
-function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
+function buildDigest(
+  meetings,
+  rangeStartNyc,
+  rangeEndExclusiveNyc,
+  markdown,
+  { fixedMondayIsoDates = null, monthStartNyc = null, monthEndNyc = null } = {}
+) {
   const fmtLine = markdown ? formatLineMarkdown : formatLinePlain;
 
-  // Weeks that touch the target month (at least one meeting falls inside it).
   const activeWeekMondays = new Set();
-  for (const m of meetings) {
-    if (!m?.start || !m?.title) continue;
-    const nycDay = DateTime.fromISO(m.start).setZone(NYC);
-    if (nycDay < monthStartNyc || nycDay >= monthEndNyc) continue;
-    activeWeekMondays.add(mondayMidnightSameIsoWeek(nycDay).toISODate());
+  if (fixedMondayIsoDates) {
+    for (const iso of fixedMondayIsoDates) activeWeekMondays.add(iso);
+  } else {
+    for (const m of meetings) {
+      if (!m?.start || !m?.title) continue;
+      const nycDay = DateTime.fromISO(m.start).setZone(NYC);
+      if (nycDay < monthStartNyc || nycDay >= monthEndNyc) continue;
+      activeWeekMondays.add(mondayMidnightSameIsoWeek(nycDay).toISODate());
+    }
   }
 
   const weeks = new Map();
   for (const m of meetings) {
     if (!m?.start || !m?.title) continue;
     const nycDay = DateTime.fromISO(m.start).setZone(NYC);
+    if (nycDay < rangeStartNyc || nycDay >= rangeEndExclusiveNyc) continue;
+
     const monday = mondayMidnightSameIsoWeek(nycDay);
     const mondayKey = monday.toISODate();
     if (!activeWeekMondays.has(mondayKey)) continue;
@@ -322,18 +356,25 @@ function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
     w.lines[dayKey].events.push({ iso: m.start, title: m.title, extProps });
   }
 
-  const sortedWeekKeys = [...weeks.keys()].sort((a, b) =>
-    weeks.get(a).sortKey.toMillis() - weeks.get(b).sortKey.toMillis()
-  );
+  const sortedWeekKeys = fixedMondayIsoDates
+    ? fixedMondayIsoDates
+    : [...weeks.keys()].sort(
+        (a, b) => weeks.get(a).sortKey.toMillis() - weeks.get(b).sortKey.toMillis()
+      );
 
   const blocks = [];
   for (const wk of sortedWeekKeys) {
-    const w = weeks.get(wk);
+    const monday = DateTime.fromISO(wk, { zone: NYC });
+    const w = weeks.get(wk) ?? { sortKey: monday, lines: {} };
     const parts = [];
-    parts.push("This Week At FINOS");
+    parts.push(
+      fixedMondayIsoDates
+        ? `### ${formatWeekRangeTitle(monday)}`
+        : "This Week At FINOS"
+    );
     parts.push("");
     for (let offset = 0; offset < 7; offset += 1) {
-      const day = w.sortKey.plus({ days: offset });
+      const day = monday.plus({ days: offset });
       const dk = day.toFormat("yyyy-MM-dd");
       parts.push(day.toFormat("cccc, LLLL d"));
       const events = w.lines[dk]?.events ?? [];
@@ -346,38 +387,72 @@ function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
     blocks.push(parts.join("\n").trimEnd());
   }
 
+  if (fixedMondayIsoDates) return blocks.join("\n\n");
   return blocks.filter((b) => b.split("\n").length > 2).join("\n\n");
 }
 
 async function main() {
-  const monthStr = parseMonthArg(process.argv);
+  const explicitMonth = parseExplicitMonthArg(process.argv);
   const slug = process.env.PROJECT_SLUG ?? "finos";
   const outPath = process.env.OUTPUT ?? "";
   const outHtmlPath = process.env.OUTPUT_HTML ?? "";
   const weekCachePath = process.env.WEEK_CACHE_PATH ?? "";
   const markdown = process.env.FORMAT !== "plain";
 
-  const { start: monthStartNyc, end: monthEndNyc } = monthBoundsNyc(monthStr);
+  const nowNyc = DateTime.now().setZone(NYC);
+  const thisMonday = mondayMidnightSameIsoWeek(nowNyc);
+
+  let rangeStartNyc;
+  let rangeEndExclusiveNyc;
+  let fixedMondayIsoDates = null;
+  let monthStartNyc = null;
+  let monthEndNyc = null;
+
+  if (explicitMonth) {
+    const bounds = monthBoundsNyc(explicitMonth);
+    monthStartNyc = bounds.start;
+    monthEndNyc = bounds.end;
+    rangeStartNyc = monthStartNyc;
+    rangeEndExclusiveNyc = monthEndNyc;
+  } else {
+    const previousMonday = thisMonday.minus({ weeks: 1 });
+    const nextSunday = thisMonday.plus({ weeks: 1, days: 6 }).endOf("day");
+    rangeStartNyc = previousMonday;
+    rangeEndExclusiveNyc = nextSunday.plus({ days: 1 }).startOf("day");
+    fixedMondayIsoDates = [-1, 0, 1].map((i) =>
+      thisMonday.plus({ weeks: i }).toISODate()
+    );
+  }
+
+  const digestWindowLabel = fixedMondayIsoDates
+    ? formatNycDaySpan(rangeStartNyc, rangeEndExclusiveNyc.minus({ days: 1 }))
+    : monthStartNyc.toFormat("LLLL yyyy");
+
   console.error(
-    `Fetching public meetings for ${slug} (${monthStartNyc.toFormat("LLLL yyyy")}, month bounds ${NYC})…`
+    fixedMondayIsoDates
+      ? `Fetching public meetings for ${slug} (${digestWindowLabel}, previous/current/next NYC weeks)…`
+      : `Fetching public meetings for ${slug} (${digestWindowLabel}, month bounds ${NYC})…`
   );
 
   const data = await fetchMeetings(slug);
   const meetings = Array.isArray(data?.meetings) ? data.meetings : [];
 
-  // LFX public feed can hide completed meetings. For the current month, merge
-  // current NYC week past meetings so this week's earlier days stay visible.
-  const nowNyc = DateTime.now().setZone(NYC);
-  if (monthStartNyc.hasSame(nowNyc, "month")) {
-    const weekStart = mondayMidnightSameIsoWeek(nowNyc);
+  // LFX public feed can hide completed meetings. Merge /past for the rolling
+  // window (previous + current week) or the live month when rendering it.
+  const runPastAndCacheMerge =
+    fixedMondayIsoDates || monthStartNyc.hasSame(nowNyc, "month");
+  if (runPastAndCacheMerge) {
+    const weekStart = thisMonday;
     const weekEnd = weekStart.plus({ days: 6 }).endOf("day");
+    const pastStart = fixedMondayIsoDates ? weekStart.minus({ weeks: 1 }) : weekStart;
     const weekStartNyc = weekStart.toISODate();
+    const pastStartNyc = pastStart.toISODate();
     const weekEndNyc = nowNyc.toISODate();
     const weekEndFullIso = weekEnd.toISODate();
     try {
       const pastMeetings = await fetchPastMeetingsForRange(
         slug,
-        weekStartNyc,
+        pastStartNyc,
         weekEndNyc
       );
       const seen = new Set(meetings.map((m) => `${m?.id ?? ""}|${m?.start ?? ""}`));
@@ -390,7 +465,7 @@ async function main() {
       }
       if (pastMeetings.length > 0) {
         console.error(
-          `Merged ${pastMeetings.length} past meetings from ${weekStartNyc}..${weekEndNyc} (${NYC}).`
+          `Merged ${pastMeetings.length} past meetings from ${pastStartNyc}..${weekEndNyc} (${NYC}).`
         );
       }
     } catch (err) {
@@ -433,17 +508,32 @@ async function main() {
     }
   }
 
-  let digest = buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown);
-  if (!digest)
-    digest = `_No FINOS meetings in ${monthStartNyc.toFormat("LLLL yyyy")} (${NYC} month boundaries)._`;
+  let digest = buildDigest(meetings, rangeStartNyc, rangeEndExclusiveNyc, markdown, {
+    fixedMondayIsoDates,
+    monthStartNyc,
+    monthEndNyc,
+  });
+  if (!digest) {
+    digest = fixedMondayIsoDates
+      ? `_No FINOS meetings in ${digestWindowLabel} (${NYC}, three-week window)._`
+      : `_No FINOS meetings in ${monthStartNyc.toFormat("LLLL yyyy")} (${NYC} month boundaries)._`;
+  }
 
   const header = markdown
-    ? `## FINOS calendar — ${monthStartNyc.toFormat(
-        "LLLL yyyy"
-      )}\n\nSource: [FINOS meetings (month)](https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month).\n`
-    : `FINOS calendar — ${monthStartNyc.toFormat(
-        "LLLL yyyy"
-      )}\n\nSource: https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month\n`;
+    ? fixedMondayIsoDates
+      ? `## FINOS calendar — ${digestWindowLabel}\n\n` +
+        `Rolling view: previous, current, and next NYC week (Monday–Sunday). ` +
+        `Source: [FINOS meetings (month)](https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month).\n`
+      : `## FINOS calendar — ${monthStartNyc.toFormat(
+          "LLLL yyyy"
+        )}\n\nSource: [FINOS meetings (month)](https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month).\n`
+    : fixedMondayIsoDates
+      ? `FINOS calendar — ${digestWindowLabel}\n\n` +
+        `Rolling view: previous, current, and next NYC week (Monday–Sunday). ` +
+        `Source: https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month\n`
+      : `FINOS calendar — ${monthStartNyc.toFormat(
+          "LLLL yyyy"
+        )}\n\nSource: https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month\n`;
 
   const full = `${header}\n${digest}\n`;
   process.stdout.write(full);

@@ -3,8 +3,16 @@ name: FINOS This Week At (monthly digest)
 on:
   workflow_dispatch:
     inputs:
+      range:
+        description: Previous, current, and next NYC week (Pages default) or a specific calendar month.
+        required: true
+        default: rolling-weeks
+        type: choice
+        options:
+          - rolling-weeks
+          - custom-month
       month:
-        description: Calendar month to render (YYYY-MM). Defaults to current month in America/New_York.
+        description: Required when range is custom-month (YYYY-MM). Weeks render Mon–Sun; boundary weeks include spillover days from adjacent months.
         required: false
         type: string
       format:
@@ -53,20 +61,30 @@ jobs:
           OUTPUT: ${{ github.workspace }}/output/finos-this-month.md
           OUTPUT_HTML: ${{ github.workspace }}/output/finos-this-month.html
           WEEK_CACHE_PATH: ${{ github.workspace }}/.cache/current-week-meetings.json
+          DISPATCH_RANGE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.range || 'rolling-weeks' }}
           DISPATCH_MONTH: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.month || '' }}
           DISPATCH_FORMAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.format || 'markdown' }}
         run: |
           set -e
+          ARGS=()
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            if [ -n "${DISPATCH_MONTH}" ]; then
-              export MONTH="${DISPATCH_MONTH}"
+            if [ "${DISPATCH_RANGE}" = "custom-month" ]; then
+              if [ -z "${DISPATCH_MONTH}" ]; then
+                echo "month is required when range is custom-month"
+                exit 1
+              fi
+              if ! [[ "${DISPATCH_MONTH}" =~ ^[0-9]{4}-[0-9]{2}$ ]]; then
+                echo "month must be YYYY-MM"
+                exit 1
+              fi
+              ARGS+=(--month "${DISPATCH_MONTH}")
             fi
             if [ "${DISPATCH_FORMAT}" = "plain" ]; then
               export FORMAT=plain
             fi
           fi
           mkdir -p output
-          node scripts/finos-weekly-calendar.mjs
+          node scripts/finos-weekly-calendar.mjs "${ARGS[@]}"
 
       - name: Save current-week cache
         uses: actions/cache/save@v4
