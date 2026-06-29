@@ -288,16 +288,24 @@ async function saveWeekCache(cachePath, meetings, weekStartIso, weekEndIso) {
 
 function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
   const fmtLine = markdown ? formatLineMarkdown : formatLinePlain;
-  const weeks = new Map();
 
+  // Weeks that touch the target month (at least one meeting falls inside it).
+  const activeWeekMondays = new Set();
   for (const m of meetings) {
     if (!m?.start || !m?.title) continue;
-    const ts = DateTime.fromISO(m.start);
-    if (ts < monthStartNyc || ts >= monthEndNyc) continue;
+    const nycDay = DateTime.fromISO(m.start).setZone(NYC);
+    if (nycDay < monthStartNyc || nycDay >= monthEndNyc) continue;
+    activeWeekMondays.add(mondayMidnightSameIsoWeek(nycDay).toISODate());
+  }
 
-    const nycDay = ts.setZone(NYC);
+  const weeks = new Map();
+  for (const m of meetings) {
+    if (!m?.start || !m?.title) continue;
+    const nycDay = DateTime.fromISO(m.start).setZone(NYC);
     const monday = mondayMidnightSameIsoWeek(nycDay);
     const mondayKey = monday.toISODate();
+    if (!activeWeekMondays.has(mondayKey)) continue;
+
     let w = weeks.get(mondayKey);
     if (!w) {
       w = { sortKey: monday, lines: {} };
@@ -306,7 +314,7 @@ function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
 
     const dayKey = nycDay.toFormat("yyyy-MM-dd");
     if (!w.lines[dayKey]) {
-      w.lines[dayKey] = { daySort: nycDay.startOf("day"), events: [] };
+      w.lines[dayKey] = { events: [] };
     }
 
     const extProps =
@@ -321,15 +329,14 @@ function buildMonthlyDigest(meetings, monthStartNyc, monthEndNyc, markdown) {
   const blocks = [];
   for (const wk of sortedWeekKeys) {
     const w = weeks.get(wk);
-    const dayKeys = Object.keys(w.lines).sort(
-      (a, b) => w.lines[a].daySort.toMillis() - w.lines[b].daySort.toMillis()
-    );
     const parts = [];
     parts.push("This Week At FINOS");
     parts.push("");
-    for (const dk of dayKeys) {
-      const { daySort, events } = w.lines[dk];
-      parts.push(daySort.toFormat("cccc, LLLL d"));
+    for (let offset = 0; offset < 7; offset += 1) {
+      const day = w.sortKey.plus({ days: offset });
+      const dk = day.toFormat("yyyy-MM-dd");
+      parts.push(day.toFormat("cccc, LLLL d"));
+      const events = w.lines[dk]?.events ?? [];
       events.sort(
         (a, b) => DateTime.fromISO(a.iso).toMillis() - DateTime.fromISO(b.iso).toMillis()
       );
