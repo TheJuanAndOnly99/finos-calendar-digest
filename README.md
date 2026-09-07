@@ -7,6 +7,8 @@ Live output: <https://thejuanandonly99.github.io/finos-calendar-digest/>
 By default the output shows the **previous**, **current**, and **next** NYC
 week (Monday–Sunday), with start times in both **New York** and **London**
 time and a one-click **Sign Up** link to the LFX Zoom registration page.
+Each digest includes two formats — **With times** and **Titles only** — and
+the HTML page lets you switch between them with tabs.
 Pass `--month` / `MONTH` to render a full calendar month instead.
 
 > This project calls the LFX Project Control Center public JSON endpoint
@@ -27,11 +29,13 @@ Pass `--month` / `MONTH` to render a full calendar month instead.
 3. Merges a small persistent cache (`.cache/current-week-meetings.json`) as a
    second-level fallback, then re-saves the cache for the active week.
 4. Buckets meetings into NYC weeks (always Monday–Sunday, including spillover
-   days at month boundaries), formats each line as
-   `hh:mm a NYC / hh:mm a UK - <title> - [Sign Up](<url>)`, and emits the
-   digest as Markdown (default) or plain text.
+   days at month boundaries), formats each line in two styles
+   (`hh:mm a NYC / hh:mm a UK - <title> - [Sign Up](<url>)` and
+   `[<title>](<url>)`), and emits the digest as Markdown (default) or plain
+   text.
 5. Optionally writes a styled HTML version (via a small inline Markdown ->
-   HTML converter) for publishing.
+   HTML converter) for publishing, with tabs to switch between the two
+   formats.
 
 ## Requirements
 
@@ -115,16 +119,30 @@ output/                             # generated md / html (gitignored)
 
 ## Output format
 
+Markdown stacks both views under **With times** and **Titles only**:
+
 ```
 ## FINOS calendar — June 22–July 12, 2026
 
 Rolling view: previous, current, and next NYC week (Monday–Sunday). Source: ...
 
+## With times
+
 ### June 22–28, 2026
 
 Monday, June 22
-...
+09:00 AM NYC / 02:00 PM UK - FDC3 Sail Project Meeting - [Sign Up](…)
+
+## Titles only
+
+### June 22–28, 2026
+
+Monday, June 22
+[FDC3 Sail Project Meeting](…)
 ```
+
+The HTML page shows the same two formats behind **With times** /
+**Titles only** tabs (choice is remembered in `localStorage`).
 
 Times are computed from each event's ISO start, then converted to
 `America/New_York` and `Europe/London`. Weeks are grouped using ISO weeks

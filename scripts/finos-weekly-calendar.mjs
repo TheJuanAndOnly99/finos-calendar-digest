@@ -10,7 +10,15 @@ const DEFAULT_API =
   "https://pcc-bff.platform.linuxfoundation.org/production/api/v2/itx-services/public/meetings";
 
 function isMeetingLine(line) {
-  return /^\d{1,2}:\d{2} [AP]M NYC /.test(line);
+  // Detailed (pre/post link convert): "09:00 AM NYC / …"
+  // Compact markdown: "[Title](url)" → after convert may include target/rel attrs
+  // Compact plain: "Title (url)"
+  return (
+    /^\d{1,2}:\d{2} [AP]M NYC /.test(line) ||
+    /^\[[^\]]+\]\(https?:\/\/[^\s)]+\)$/.test(line) ||
+    /^<a href="https?:\/\/[^"]+"[^>]*>[^<]+<\/a>$/.test(line) ||
+    /^.+ \(https?:\/\/[^\s)]+\)$/.test(line)
+  );
 }
 
 function isDayHeading(line) {
@@ -35,72 +43,86 @@ function closeWeek(out, inWeek) {
   }
 }
 
-function markdownToHtml(markdown) {
-  const escaped = markdown
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-
-  const withLinks = escaped.replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
-  );
-
-  const lines = withLinks.split("\n");
-  const out = [];
+/** Convert digest markdown (header + weeks) into HTML body fragments. */
+function markdownToBody(markdown) {
+  const lines = markdown.split("\n");
+  const header = [];
+  const weeks = [];
   const inList = { value: false };
   const inWeek = { value: false };
+  let out = header;
+
+  const escapeHtml = (s) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const withLinks = (s) =>
+    escapeHtml(s).replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
 
   for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i].trimEnd();
-    if (!line.trim()) {
+    const raw = lines[i].trimEnd();
+    if (!raw.trim()) {
       closeList(out, inList);
       continue;
     }
 
-    if (line.startsWith("## ")) {
+    if (raw.startsWith("## ")) {
       closeList(out, inList);
       closeWeek(out, inWeek);
-      out.push(`<h2>${line.slice(3)}</h2>`);
+      out = header;
+      out.push(`<h2>${withLinks(raw.slice(3))}</h2>`);
       continue;
     }
 
-    if (isWeekHeading(line)) {
+    if (isWeekHeading(raw)) {
       closeList(out, inList);
       closeWeek(out, inWeek);
+      out = weeks;
       out.push('<section class="week">');
       inWeek.value = true;
-      const title = line.startsWith("### ") ? line.slice(4) : line;
-      out.push(`<h3>${title}</h3>`);
+      const title = raw.startsWith("### ") ? raw.slice(4) : raw;
+      out.push(`<h3>${withLinks(title)}</h3>`);
       continue;
     }
 
-    if (isDayHeading(line)) {
+    if (isDayHeading(raw)) {
       closeList(out, inList);
-      out.push(`<h4>${line}</h4>`);
+      out.push(`<h4>${escapeHtml(raw)}</h4>`);
       const next = lines.slice(i + 1).find((l) => l.trim());
-      if (!next || !isMeetingLine(next)) {
+      if (!next || !isMeetingLine(next.trimEnd())) {
         out.push('<p class="empty-day">No meetings scheduled.</p>');
       }
       continue;
     }
 
-    if (isMeetingLine(line)) {
+    if (isMeetingLine(raw)) {
       if (!inList.value) {
         out.push("<ul>");
         inList.value = true;
       }
-      out.push(`<li>${line}</li>`);
+      out.push(`<li>${withLinks(raw)}</li>`);
       continue;
     }
 
     closeList(out, inList);
-    out.push(`<p class="intro">${line}</p>`);
+    // Intro / source lines stay in the shared header area.
+    if (!inWeek.value) {
+      out = header;
+      out.push(`<p class="intro">${withLinks(raw)}</p>`);
+    } else {
+      out.push(`<p class="intro">${withLinks(raw)}</p>`);
+    }
   }
 
   closeList(out, inList);
   closeWeek(out, inWeek);
 
+  return { headerHtml: header.join("\n"), weeksHtml: weeks.join("\n") };
+}
+
+function wrapDualHtml(headerHtml, detailedWeeksHtml, compactWeeksHtml) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -111,8 +133,18 @@ function markdownToHtml(markdown) {
     body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; color: #1a1a1a; }
     h2 { margin: 0 0 12px; font-size: 1.75rem; }
     .intro { margin: 0 0 24px; color: #444; }
+    .view-toggle { display: flex; gap: 8px; margin: 0 0 8px; flex-wrap: wrap; }
+    .view-toggle button {
+      appearance: none; border: 1px solid #ccc; background: #f5f5f5; color: #222;
+      padding: 8px 14px; font: inherit; font-size: 0.95rem; cursor: pointer; border-radius: 6px;
+    }
+    .view-toggle button[aria-selected="true"] {
+      background: #0b5fff; border-color: #0b5fff; color: #fff;
+    }
+    .view-toggle button:focus-visible { outline: 2px solid #0b5fff; outline-offset: 2px; }
+    .view-panel[hidden] { display: none; }
     .week { margin: 32px 0; padding: 20px 0 8px; border-top: 1px solid #ddd; }
-    .week:first-of-type { border-top: none; padding-top: 0; }
+    .view-panel > .week:first-child { border-top: none; padding-top: 0; margin-top: 16px; }
     h3 { margin: 0 0 16px; font-size: 1.25rem; }
     h4 { margin: 20px 0 8px; font-size: 1rem; color: #333; }
     ul { margin: 0 0 8px; padding-left: 1.25rem; }
@@ -122,10 +154,52 @@ function markdownToHtml(markdown) {
   </style>
 </head>
 <body>
-${out.join("\n")}
+${headerHtml}
+<nav class="view-toggle" role="tablist" aria-label="Digest format">
+  <button type="button" role="tab" id="tab-detailed" aria-controls="view-detailed" aria-selected="true" data-view="detailed">With times</button>
+  <button type="button" role="tab" id="tab-compact" aria-controls="view-compact" aria-selected="false" data-view="compact">Titles only</button>
+</nav>
+<div id="view-detailed" class="view-panel" role="tabpanel" aria-labelledby="tab-detailed">
+${detailedWeeksHtml}
+</div>
+<div id="view-compact" class="view-panel" role="tabpanel" aria-labelledby="tab-compact" hidden>
+${compactWeeksHtml}
+</div>
+<script>
+(function () {
+  var tabs = document.querySelectorAll(".view-toggle [role=tab]");
+  var panels = {
+    detailed: document.getElementById("view-detailed"),
+    compact: document.getElementById("view-compact")
+  };
+  function select(view) {
+    tabs.forEach(function (tab) {
+      var on = tab.getAttribute("data-view") === view;
+      tab.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    Object.keys(panels).forEach(function (key) {
+      if (key === view) panels[key].removeAttribute("hidden");
+      else panels[key].setAttribute("hidden", "");
+    });
+    try { localStorage.setItem("finos-digest-view", view); } catch (e) {}
+  }
+  tabs.forEach(function (tab) {
+    tab.addEventListener("click", function () { select(tab.getAttribute("data-view")); });
+  });
+  var saved = null;
+  try { saved = localStorage.getItem("finos-digest-view"); } catch (e) {}
+  if (saved === "detailed" || saved === "compact") select(saved);
+})();
+</script>
 </body>
 </html>
 `;
+}
+
+function markdownToHtml(detailedMarkdown, compactMarkdown) {
+  const detailed = markdownToBody(detailedMarkdown);
+  const compact = markdownToBody(compactMarkdown);
+  return wrapDualHtml(detailed.headerHtml, detailed.weeksHtml, compact.weeksHtml);
 }
 
 /** When unset, the digest uses a rolling NYC Monday–Sunday window (see main). */
@@ -186,19 +260,34 @@ function withInviteParam(url) {
   }
 }
 
-function formatLineMarkdown(title, isoStart, extProps) {
+function formatLineDetailedMarkdown(title, isoStart, extProps) {
   const t = DateTime.fromISO(isoStart);
   const nycT = t.setZone(NYC).toFormat("hh:mm a");
   const ukT = t.setZone(UK).toFormat("hh:mm a");
   return `${nycT} NYC / ${ukT} UK - ${title} - [Sign Up](${signupUrl(extProps)})`;
 }
 
-function formatLinePlain(title, isoStart, extProps) {
+function formatLineDetailedPlain(title, isoStart, extProps) {
   const t = DateTime.fromISO(isoStart);
   const nycT = t.setZone(NYC).toFormat("hh:mm a");
   const ukT = t.setZone(UK).toFormat("hh:mm a");
   const url = signupUrl(extProps);
   return `${nycT} NYC / ${ukT} UK - ${title} - [Sign Up](${url})`;
+}
+
+function formatLineCompactMarkdown(title, _isoStart, extProps) {
+  return `[${title}](${signupUrl(extProps)})`;
+}
+
+function formatLineCompactPlain(title, _isoStart, extProps) {
+  return `${title} (${signupUrl(extProps)})`;
+}
+
+function lineFormatter(markdown, style) {
+  if (style === "compact") {
+    return markdown ? formatLineCompactMarkdown : formatLineCompactPlain;
+  }
+  return markdown ? formatLineDetailedMarkdown : formatLineDetailedPlain;
 }
 
 function sleepMs(ms) {
@@ -350,9 +439,14 @@ function buildDigest(
   rangeStartNyc,
   rangeEndExclusiveNyc,
   markdown,
-  { fixedMondayIsoDates = null, monthStartNyc = null, monthEndNyc = null } = {}
+  {
+    fixedMondayIsoDates = null,
+    monthStartNyc = null,
+    monthEndNyc = null,
+    style = "detailed",
+  } = {}
 ) {
-  const fmtLine = markdown ? formatLineMarkdown : formatLinePlain;
+  const fmtLine = lineFormatter(markdown, style);
 
   const activeWeekMondays = new Set();
   if (fixedMondayIsoDates) {
@@ -544,16 +638,27 @@ async function main() {
     }
   }
 
-  let digest = buildDigest(meetings, rangeStartNyc, rangeEndExclusiveNyc, markdown, {
-    fixedMondayIsoDates,
-    monthStartNyc,
-    monthEndNyc,
-  });
-  if (!digest) {
-    digest = fixedMondayIsoDates
-      ? `_No FINOS meetings in ${digestWindowLabel} (${NYC}, three-week window)._`
-      : `_No FINOS meetings in ${monthStartNyc.toFormat("LLLL yyyy")} (${NYC} month boundaries)._`;
-  }
+  const digestOpts = { fixedMondayIsoDates, monthStartNyc, monthEndNyc };
+  let detailedDigest = buildDigest(
+    meetings,
+    rangeStartNyc,
+    rangeEndExclusiveNyc,
+    markdown,
+    { ...digestOpts, style: "detailed" }
+  );
+  let compactDigest = buildDigest(
+    meetings,
+    rangeStartNyc,
+    rangeEndExclusiveNyc,
+    markdown,
+    { ...digestOpts, style: "compact" }
+  );
+
+  const emptyNote = fixedMondayIsoDates
+    ? `_No FINOS meetings in ${digestWindowLabel} (${NYC}, three-week window)._`
+    : `_No FINOS meetings in ${monthStartNyc.toFormat("LLLL yyyy")} (${NYC} month boundaries)._`;
+  if (!detailedDigest) detailedDigest = emptyNote;
+  if (!compactDigest) compactDigest = emptyNote;
 
   const header = markdown
     ? fixedMondayIsoDates
@@ -571,7 +676,18 @@ async function main() {
           "LLLL yyyy"
         )}\n\nSource: https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month\n`;
 
-  const full = `${header}\n${digest}\n`;
+  // Markdown / plain: stack both formats. HTML gets a tab switcher instead.
+  const full =
+    `${header}\n` +
+    (markdown ? `## With times\n\n` : `With times\n\n`) +
+    `${detailedDigest}\n\n` +
+    (markdown ? `## Titles only\n\n` : `Titles only\n\n`) +
+    `${compactDigest}\n`;
+
+  // HTML uses the shared header once, then each digest without the dual H2 wrappers.
+  const detailedForHtml = `${header}\n${detailedDigest}\n`;
+  const compactForHtml = `${header}\n${compactDigest}\n`;
+
   process.stdout.write(full);
 
   if (outPath) {
@@ -584,7 +700,7 @@ async function main() {
   if (outHtmlPath) {
     const absHtml = resolve(outHtmlPath);
     await mkdir(dirname(absHtml), { recursive: true });
-    await writeFile(absHtml, markdownToHtml(full), "utf8");
+    await writeFile(absHtml, markdownToHtml(detailedForHtml, compactForHtml), "utf8");
     console.error(`Wrote ${absHtml}`);
   }
 
