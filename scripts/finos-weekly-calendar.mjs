@@ -22,7 +22,44 @@ function isMeetingLine(line) {
 }
 
 function isDayHeading(line) {
-  return /^[A-Za-z]+, [A-Za-z]+ \d+$/.test(line);
+  if (/^[A-Za-z]+, [A-Za-z]+ \d+$/.test(line)) return true;
+  // Day-link view: the day itself is the calendar link.
+  if (
+    /^\[[A-Za-z]+, [A-Za-z]+ \d+\]\(https:\/\/calendar\.finos\.org\/\?view=day&date=\d{4}-\d{2}-\d{2}\)$/.test(
+      line
+    )
+  ) {
+    return true;
+  }
+  if (
+    /^[A-Za-z]+, [A-Za-z]+ \d+ \(https:\/\/calendar\.finos\.org\/\?view=day&date=\d{4}-\d{2}-\d{2}\)$/.test(
+      line
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function dayHeadingHtml(raw, escapeHtml) {
+  const linked = raw.match(
+    /^\[([^\]]+)\]\((https:\/\/calendar\.finos\.org\/\?view=day&date=\d{4}-\d{2}-\d{2})\)$/
+  );
+  const plain = raw.match(
+    /^([A-Za-z]+, [A-Za-z]+ \d+) \((https:\/\/calendar\.finos\.org\/\?view=day&date=\d{4}-\d{2}-\d{2})\)$/
+  );
+  const match = linked || plain;
+  if (!match) return `<h4>${escapeHtml(raw)}</h4>`;
+  return `<h4><a href="${escapeHtml(match[2])}" target="_blank" rel="noopener noreferrer">${escapeHtml(match[1])}</a></h4>`;
+}
+
+/** Plain meeting title in the day-link view (no per-meeting URL). */
+function isPlainTitleLine(line) {
+  if (!line.trim()) return false;
+  if (line.startsWith("## ")) return false;
+  if (isWeekHeading(line) || isDayHeading(line)) return false;
+  if (line === "No meetings scheduled.") return false;
+  return true;
 }
 
 function isWeekHeading(line) {
@@ -50,6 +87,7 @@ function markdownToBody(markdown) {
   const weeks = [];
   const inList = { value: false };
   const inWeek = { value: false };
+  let inDay = false;
   let out = header;
 
   const escapeHtml = (s) =>
@@ -71,6 +109,7 @@ function markdownToBody(markdown) {
     if (raw.startsWith("## ")) {
       closeList(out, inList);
       closeWeek(out, inWeek);
+      inDay = false;
       out = header;
       out.push(`<h2>${withLinks(raw.slice(3))}</h2>`);
       continue;
@@ -79,6 +118,7 @@ function markdownToBody(markdown) {
     if (isWeekHeading(raw)) {
       closeList(out, inList);
       closeWeek(out, inWeek);
+      inDay = false;
       out = weeks;
       out.push('<section class="week">');
       inWeek.value = true;
@@ -89,15 +129,23 @@ function markdownToBody(markdown) {
 
     if (isDayHeading(raw)) {
       closeList(out, inList);
-      out.push(`<h4>${escapeHtml(raw)}</h4>`);
+      inDay = true;
+      out.push(dayHeadingHtml(raw, escapeHtml));
       const next = lines.slice(i + 1).find((l) => l.trim());
-      if (!next || !isMeetingLine(next.trimEnd())) {
+      const nextLine = next ? next.trimEnd() : "";
+      if (!nextLine || !(isMeetingLine(nextLine) || isPlainTitleLine(nextLine))) {
         out.push('<p class="empty-day">No meetings scheduled.</p>');
       }
       continue;
     }
 
-    if (isMeetingLine(raw)) {
+    if (raw === "No meetings scheduled.") {
+      closeList(out, inList);
+      out.push('<p class="empty-day">No meetings scheduled.</p>');
+      continue;
+    }
+
+    if (isMeetingLine(raw) || (inWeek.value && inDay && isPlainTitleLine(raw))) {
       if (!inList.value) {
         out.push("<ul>");
         inList.value = true;
@@ -122,7 +170,7 @@ function markdownToBody(markdown) {
   return { headerHtml: header.join("\n"), weeksHtml: weeks.join("\n") };
 }
 
-function wrapDualHtml(headerHtml, detailedWeeksHtml, compactWeeksHtml) {
+function wrapDigestHtml(headerHtml, detailedWeeksHtml, compactWeeksHtml, dayLinkWeeksHtml) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -130,7 +178,7 @@ function wrapDualHtml(headerHtml, detailedWeeksHtml, compactWeeksHtml) {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>FINOS Calendar Digest</title>
   <style>
-    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; color: #1a1a1a; }
+    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; line-height: 1.5; padding: 0 16px; color: #1a1a1a; background: #fff; color-scheme: light; }
     h2 { margin: 0 0 12px; font-size: 1.75rem; }
     .intro { margin: 0 0 24px; color: #444; }
     .view-toggle { display: flex; gap: 8px; margin: 0 0 8px; flex-wrap: wrap; }
@@ -158,6 +206,7 @@ ${headerHtml}
 <nav class="view-toggle" role="tablist" aria-label="Digest format">
   <button type="button" role="tab" id="tab-detailed" aria-controls="view-detailed" aria-selected="true" data-view="detailed">With times</button>
   <button type="button" role="tab" id="tab-compact" aria-controls="view-compact" aria-selected="false" data-view="compact">Titles only</button>
+  <button type="button" role="tab" id="tab-daylink" aria-controls="view-daylink" aria-selected="false" data-view="daylink">Day links</button>
 </nav>
 <div id="view-detailed" class="view-panel" role="tabpanel" aria-labelledby="tab-detailed">
 ${detailedWeeksHtml}
@@ -165,12 +214,16 @@ ${detailedWeeksHtml}
 <div id="view-compact" class="view-panel" role="tabpanel" aria-labelledby="tab-compact" hidden>
 ${compactWeeksHtml}
 </div>
+<div id="view-daylink" class="view-panel" role="tabpanel" aria-labelledby="tab-daylink" hidden>
+${dayLinkWeeksHtml}
+</div>
 <script>
 (function () {
   var tabs = document.querySelectorAll(".view-toggle [role=tab]");
   var panels = {
     detailed: document.getElementById("view-detailed"),
-    compact: document.getElementById("view-compact")
+    compact: document.getElementById("view-compact"),
+    daylink: document.getElementById("view-daylink")
   };
   function select(view) {
     tabs.forEach(function (tab) {
@@ -188,7 +241,7 @@ ${compactWeeksHtml}
   });
   var saved = null;
   try { saved = localStorage.getItem("finos-digest-view"); } catch (e) {}
-  if (saved === "detailed" || saved === "compact") select(saved);
+  if (saved === "detailed" || saved === "compact" || saved === "daylink") select(saved);
 })();
 </script>
 </body>
@@ -196,10 +249,16 @@ ${compactWeeksHtml}
 `;
 }
 
-function markdownToHtml(detailedMarkdown, compactMarkdown) {
+function markdownToHtml(detailedMarkdown, compactMarkdown, dayLinkMarkdown) {
   const detailed = markdownToBody(detailedMarkdown);
   const compact = markdownToBody(compactMarkdown);
-  return wrapDualHtml(detailed.headerHtml, detailed.weeksHtml, compact.weeksHtml);
+  const dayLink = markdownToBody(dayLinkMarkdown);
+  return wrapDigestHtml(
+    detailed.headerHtml,
+    detailed.weeksHtml,
+    compact.weeksHtml,
+    dayLink.weeksHtml
+  );
 }
 
 /** When unset, the digest uses a rolling NYC Monday–Sunday window (see main). */
@@ -240,6 +299,10 @@ function formatNycDaySpan(startNyc, endNyc) {
 
 function formatWeekRangeTitle(mondayNyc) {
   return formatNycDaySpan(mondayNyc, mondayNyc.plus({ days: 6 }));
+}
+
+function finosDayUrl(isoDate) {
+  return `https://calendar.finos.org/?view=day&date=${isoDate}`;
 }
 
 function signupUrl(ext) {
@@ -284,6 +347,7 @@ function formatLineCompactPlain(title, _isoStart, extProps) {
 }
 
 function lineFormatter(markdown, style) {
+  if (style === "daylink") return (title) => title;
   if (style === "compact") {
     return markdown ? formatLineCompactMarkdown : formatLineCompactPlain;
   }
@@ -503,15 +567,28 @@ function buildDigest(
         : "This Week At FINOS"
     );
     parts.push("");
+    let emittedDay = false;
     for (let offset = 0; offset < 7; offset += 1) {
       const day = monday.plus({ days: offset });
       const dk = day.toFormat("yyyy-MM-dd");
-      parts.push(day.toFormat("cccc, LLLL d"));
-      const events = w.lines[dk]?.events ?? [];
+      const events = [...(w.lines[dk]?.events ?? [])];
       events.sort(
         (a, b) => DateTime.fromISO(a.iso).toMillis() - DateTime.fromISO(b.iso).toMillis()
       );
+      if (style === "daylink" && events.length === 0) continue;
+      emittedDay = true;
+      const dayLabel = day.toFormat("cccc, LLLL d");
+      if (style === "daylink") {
+        const url = finosDayUrl(dk);
+        parts.push(markdown ? `[${dayLabel}](${url})` : `${dayLabel} (${url})`);
+      } else {
+        parts.push(dayLabel);
+      }
       for (const e of events) parts.push(fmtLine(e.title, e.iso, e.extProps));
+      parts.push("");
+    }
+    if (style === "daylink" && !emittedDay) {
+      parts.push("No meetings scheduled.");
       parts.push("");
     }
     blocks.push(parts.join("\n").trimEnd());
@@ -653,12 +730,20 @@ async function main() {
     markdown,
     { ...digestOpts, style: "compact" }
   );
+  let dayLinkDigest = buildDigest(
+    meetings,
+    rangeStartNyc,
+    rangeEndExclusiveNyc,
+    markdown,
+    { ...digestOpts, style: "daylink" }
+  );
 
   const emptyNote = fixedMondayIsoDates
     ? `_No FINOS meetings in ${digestWindowLabel} (${NYC}, three-week window)._`
     : `_No FINOS meetings in ${monthStartNyc.toFormat("LLLL yyyy")} (${NYC} month boundaries)._`;
   if (!detailedDigest) detailedDigest = emptyNote;
   if (!compactDigest) compactDigest = emptyNote;
+  if (!dayLinkDigest) dayLinkDigest = emptyNote;
 
   const header = markdown
     ? fixedMondayIsoDates
@@ -676,17 +761,20 @@ async function main() {
           "LLLL yyyy"
         )}\n\nSource: https://zoom-lfx.platform.linuxfoundation.org/meetings/finos?view=month\n`;
 
-  // Markdown / plain: stack both formats. HTML gets a tab switcher instead.
+  // Markdown / plain: stack all formats. HTML gets a tab switcher instead.
   const full =
     `${header}\n` +
     (markdown ? `## With times\n\n` : `With times\n\n`) +
     `${detailedDigest}\n\n` +
     (markdown ? `## Titles only\n\n` : `Titles only\n\n`) +
-    `${compactDigest}\n`;
+    `${compactDigest}\n\n` +
+    (markdown ? `## Day links\n\n` : `Day links\n\n`) +
+    `${dayLinkDigest}\n`;
 
-  // HTML uses the shared header once, then each digest without the dual H2 wrappers.
+  // HTML uses the shared header once, then each digest without the section H2 wrappers.
   const detailedForHtml = `${header}\n${detailedDigest}\n`;
   const compactForHtml = `${header}\n${compactDigest}\n`;
+  const dayLinkForHtml = `${header}\n${dayLinkDigest}\n`;
 
   process.stdout.write(full);
 
@@ -700,7 +788,11 @@ async function main() {
   if (outHtmlPath) {
     const absHtml = resolve(outHtmlPath);
     await mkdir(dirname(absHtml), { recursive: true });
-    await writeFile(absHtml, markdownToHtml(detailedForHtml, compactForHtml), "utf8");
+    await writeFile(
+      absHtml,
+      markdownToHtml(detailedForHtml, compactForHtml, dayLinkForHtml),
+      "utf8"
+    );
     console.error(`Wrote ${absHtml}`);
   }
 
